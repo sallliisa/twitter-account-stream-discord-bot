@@ -4,29 +4,40 @@ import discord
 import json
 from discord.ext import commands
 from src.twitter_client import client as t_client
-from src.piper import DataStream
+from src.piper import DataStream, FilterStream
+from datetime import datetime
 
 dotenv.load_dotenv(dotenv.find_dotenv())
 
 client = commands.Bot(command_prefix="lolcat ", intents=discord.Intents.all())
 
-running_streams = []
+running_filter_streams = []
+running_data_streams = []
 
 @client.command()
-async def stream_from_account(ctx, account_id, name, role_id=None, keyword_config=None):
-    for stream in running_streams:
-        if ((stream.user_id == account_id) and (stream.keyword_config == keyword_config)) or (stream.name == name):
-            await ctx.send(f"```Stream to {account_id} already exists.```")
-            return
-    
+async def stream_from_account(ctx, user_id, name, role_id=None, keyword_config=None):
     with open("keywords_config.json", "r") as f:
         config = json.load(f)
-    running_streams.append(DataStream(t_client, account_id, name, config[keyword_config] if keyword_config else None))
-    stream_index = len(running_streams) - 1
-    account_color = discord.Color.from_rgb(int(account_id[0:3]) % 255, int(account_id[3:6]) % 255, int(account_id[6:9]) % 255)
+    for filter_stream in running_filter_streams:
+        if ((filter_stream.name == name)) or ((filter_stream.data_stream.user_id == user_id) and (filter_stream.keyword_config_name == keyword_config)):
+            await ctx.send(f"```Stream with the same name or same user_id and config name already exists.```")
+            return
+    filter_stream_index = None
+    for data_stream in running_data_streams:
+        if data_stream.user_id == user_id:
+            running_filter_streams.append(FilterStream(name, data_stream, config[keyword_config], keyword_config))
+            filter_stream_index = len(running_filter_streams) - 1
+            data_stream_index = running_data_streams.index(data_stream)
+            break
+    if filter_stream_index is None:
+        running_data_streams.append(DataStream(t_client, user_id))
+        running_filter_streams.append(FilterStream(name, running_data_streams[-1], config[keyword_config], keyword_config))
+        filter_stream_index = len(running_filter_streams) - 1
+        data_stream_index = len(running_data_streams) - 1
+    account_color = discord.Color.from_rgb(int(user_id[0:3]) % 255, int(user_id[3:6]) % 255, int(user_id[6:9]) % 255)
 
-    await ctx.send(f"```Started stream {name} listening to {account_id}.```")
-    async for tweet in running_streams[stream_index].stream():
+    await ctx.send(f"```Started stream {name} listening to {user_id}.```")
+    async for tweet in running_filter_streams[filter_stream_index].stream():
         if role_id:
             await ctx.send(f"<@&{role_id}>")
         embed = embed=discord.Embed(
@@ -34,29 +45,50 @@ async def stream_from_account(ctx, account_id, name, role_id=None, keyword_confi
             description=f"{tweet.text}\n\n[Intip bounty joki](https://twitter.com/i/web/status/{tweet.id})",
         )
         embed.set_author(
-            name=f"@{running_streams[stream_index].user.username}",
-            url=f"https://twitter.com/{running_streams[stream_index].user.username}",
-            icon_url=f"{running_streams[stream_index].user.profile_image_url}"
+            name=f"@{running_data_streams[data_stream_index].user.username}",
+            url=f"https://twitter.com/{running_data_streams[data_stream_index].user.username}",
+            icon_url=f"{running_data_streams[data_stream_index].user.profile_image_url}"
         )
-        embed.set_footer(text=f"Tweet created at {tweet.created_at}\nFrom stream {name}")
+        timestamp = datetime.strptime(tweet.created_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+        embed.set_footer(text=f"{timestamp} ∙ from {name}")
         await ctx.send(embed=embed)
 
 @client.command()
-async def list_streams(ctx):
-    if running_streams:
-        embed = discord.Embed(title="Running streams", color=discord.Color.green())
-        embed.add_field(name="Name", value="\n".join([stream.name for stream in running_streams]), inline=True)
-        embed.add_field(name="Account ID", value="\n".join([stream.user_id for stream in running_streams]), inline=True)
+async def show_running_filter_streams(ctx):
+    if running_filter_streams:
+        embed = discord.Embed(title="Running filter streams", color=discord.Color.green())
+        embed.add_field(name="Name", value="\n".join([filter_stream.name for filter_stream in running_filter_streams]), inline=True)
+        embed.add_field(name="Keyword config", value="\n".join([filter_stream.keyword_config_name for filter_stream in running_filter_streams]), inline=True)
         await ctx.send(embed=embed)
     else:
         await ctx.send(f"```No running streams.```")
 
 @client.command()
-async def stop_stream(ctx, name):
-    for stream in running_streams:
-        if stream.name == name:
-            stream.stop_stream()
-            running_streams.remove(stream)
+async def stop_filter_stream(ctx, name):
+    for filter_stream in running_filter_streams:
+        if filter_stream.name == name:
+            filter_stream.stop_stream()
+            running_filter_streams.remove(filter_stream)
+            await ctx.send(f"```Stopped stream {name}.```")
+            return
+    await ctx.send(f"```Stream {name} not found.```")
+
+@client.command()
+async def show_running_data_streams(ctx):
+    if running_data_streams:
+        embed = discord.Embed(title="Running data streams", color=discord.Color.green())
+        embed.add_field(name="Name", value="\n".join([data_stream.name for data_stream in running_data_streams]), inline=True)
+        embed.add_field(name="User ID", value="\n".join([data_stream.user_id for data_stream in running_data_streams]), inline=True)
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send(f"```No running streams.```")
+
+@client.command()
+async def stop_data_stream(ctx, name):
+    for data_stream in running_data_streams:
+        if data_stream.name == name:
+            data_stream.stop_stream()
+            running_data_streams.remove(data_stream)
             await ctx.send(f"```Stopped stream {name}.```")
             return
     await ctx.send(f"```Stream {name} not found.```")
